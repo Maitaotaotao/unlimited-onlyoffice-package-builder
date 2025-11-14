@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - builds-debian-11/*
-
+  workflow_dispatch:
 env:
   DEBIAN_PACKAGE_SUFFIX: -Maitaotaotao
   TAG_SUFFIX: -Maitaotaotao
