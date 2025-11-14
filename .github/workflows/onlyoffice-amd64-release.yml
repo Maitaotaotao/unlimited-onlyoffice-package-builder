@@ -1,0 +1,143 @@
+name: Release OnlyOffice for AMD64 (Debian 11)
+
+on:
+  push:
+    tags:
+      - builds-debian-11/*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. builds-debian-11/8.1.3-3)'
+        required: true
+        type: string
+
+env:
+  DEBIAN_PACKAGE_SUFFIX: -Maitaotaotao
+  TAG_SUFFIX: -Maitaotaotao
+  DISTRO_FULLNAME: Debian 11
+  DISTRO_TAG_PREFIX: debian-11
+
+jobs:
+  onlyoffice-release:
+    strategy:
+      matrix:
+        TARGET_DISTRO: [ "debian-11" ]
+    # 🚀 使用 GitHub 官方 x86_64 托管 runner
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Determine tag name
+        id: get-tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+            echo "Manual run: using tag ${TAG}"
+          else
+            TAG="${{ github.ref_name }}"
+            echo "Automatic run: using tag ${TAG}"
+          fi
+          if [[ ! "${TAG}" == builds-debian-11/* ]]; then
+            echo "Error: Tag must start with 'builds-debian-11/'"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Check out the repo at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.get-tag.outputs.tag }}
+
+      - name: Verify architecture
+        run: |
+          echo "Architecture: $(uname -m)"
+          echo "Expected: x86_64"
+
+      - name: Free Space - apt-get clean
+        run: |
+          sudo apt-get clean
+          df -h
+
+      - name: Free Space - Remove unused Docker images
+        run: |
+          docker rmi $(docker image ls -aq) 2>/dev/null || true
+          df -h
+
+      - name: Extract version from tag
+        id: split-tag
+        run: |
+          VERSION="${{ steps.get-tag.outputs.tag }}"
+          # Remove prefix: builds-debian-11/ → e.g., 8.1.3-3
+          VERSION="${VERSION#builds-debian-11/}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Get Product version
+        id: get-product-version
+        run: |
+          VERSION="${{ steps.split-tag.outputs.version }}"
+          echo "product-version=${VERSION%.*}" >> $GITHUB_OUTPUT
+
+      - name: Get Build number
+        id: get-build-number
+        run: |
+          VERSION="${{ steps.split-tag.outputs.version }}"
+          PRODUCT_VERSION="${{ steps.get-product-version.outputs.product-version }}"
+          echo "build-number=${VERSION##$PRODUCT_VERSION.}" >> $GITHUB_OUTPUT
+
+      - name: Docker build binaries
+        run: |
+          ./onlyoffice-package-builder.sh \
+            --product-version=${{ steps.get-product-version.outputs.product-version }} \
+            --build-number=${{ steps.get-build-number.outputs.build-number }} \
+            --unlimited-organization=${{ github.repository_owner }} \
+            --tag-suffix=${{ env.TAG_SUFFIX }} \
+            --debian-package-suffix=${{ env.DEBIAN_PACKAGE_SUFFIX }} \
+            --binaries-only
+
+      - name: Docker prune containers
+        run: |
+          docker container prune -f
+
+      - name: Docker build deb package
+        run: |
+          ./onlyoffice-package-builder.sh \
+            --product-version=${{ steps.get-product-version.outputs.product-version }} \
+            --build-number=${{ steps.get-build-number.outputs.build-number }} \
+            --unlimited-organization=${{ github.repository_owner }} \
+            --tag-suffix=${{ env.TAG_SUFFIX }} \
+            --debian-package-suffix=${{ env.DEBIAN_PACKAGE_SUFFIX }} \
+            --deb-only
+
+      - name: Locate AMD64 .deb file
+        id: deb-release
+        run: |
+          # 🔸 注意：文件名使用 _amd64.deb
+          DEB_PATTERN="onlyoffice-documentserver_${{ steps.get-product-version.outputs.product-version }}-${{ steps.get-build-number.outputs.build-number }}${{ env.DEBIAN_PACKAGE_SUFFIX }}_amd64.deb"
+          RELEASE_DEB=$(find "${{ github.workspace }}" -name "${DEB_PATTERN}" -type f | head -n1)
+
+          if [[ -z "${RELEASE_DEB}" ]]; then
+            echo "❌ .deb file not found! Looking for: ${DEB_PATTERN}"
+            echo "Available files:"
+            find "${{ github.workspace }}" -name "*.deb" -type f
+            exit 1
+          fi
+
+          echo "filename=${RELEASE_DEB}" >> $GITHUB_OUTPUT
+          echo "shortfilename=$(basename "${RELEASE_DEB}")" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-tag.outputs.tag }}
+          name: OnlyOffice ${{ steps.split-tag.outputs.version }} for Debian 11 (AMD64)
+          body: |
+            AMD64 build for Debian 11.
+            Install with:
+            ```bash
+            sudo apt install ./${{ steps.deb-release.outputs.shortfilename }}
+            ```
+          files: ${{ steps.deb-release.outputs.filename }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
